@@ -1081,6 +1081,14 @@ local function BuildEncounterAlertsUI(parentFrame)
                                   items = groupSubItems },
                             }
 
+                            if UnitIsGroupLeader("player") or UnitIsGroupAssistant("player") then
+                                table.insert(menuItems, { type = "button", label = NSI:Loc("Raid Version Check"), fnc = function()
+                                    if not (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) then return end
+                                    NSUI.MenuFrame:SelectTabByName("Versions")
+                                    NSUI.version_scrollbox:CheckEncounterAlert(eid, did, alert.internalID or akey)
+                                end })
+                            end
+
                             if isReloeRow then
                                 table.insert(menuItems, { type = "button", label = NSI:Loc("Reset"), fnc = function()
                                     local diffTable = NSRT.EncounterAlerts and NSRT.EncounterAlerts[eid] and NSRT.EncounterAlerts[eid][did]
