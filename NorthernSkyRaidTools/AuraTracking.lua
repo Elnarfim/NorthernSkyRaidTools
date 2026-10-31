@@ -94,17 +94,18 @@ local function GetAuraTrackingFlowDirections(growDirection, gridGrowDirection)
     return horizontal, vertical
 end
 
-local function GetAuraTrackingRowWidth(settings)
+local function GetAuraTrackingRowWidth(settings, layoutSettings)
+    layoutSettings = layoutSettings or settings
     local width = settings.Width or 1
-    if settings.GrowDirection == "UP" or settings.GrowDirection == "DOWN" or settings.GrowDirection == "CENTER_VERTICAL" then
+    if layoutSettings.GrowDirection == "UP" or layoutSettings.GrowDirection == "DOWN" or layoutSettings.GrowDirection == "CENTER_VERTICAL" then
         local height = settings.Height or 1
-        local limit = settings.AurasPerRowColumn or 20
-        local spacing = settings.Spacing or 0
+        local limit = layoutSettings.AurasPerRowColumn or 20
+        local spacing = layoutSettings.Spacing or 0
         return math.max(height, (height * limit) + (spacing * math.max(limit - 1, 0)))
     end
 
-    local limit = settings.AurasPerRowColumn or 20
-    local spacing = settings.Spacing or 0
+    local limit = layoutSettings.AurasPerRowColumn or 20
+    local spacing = layoutSettings.Spacing or 0
     return math.max(width, (width * limit) + (spacing * math.max(limit - 1, 0)))
 end
 
@@ -204,6 +205,7 @@ function NSI:CreateAuraTrackingSettingsDefaults(overrides)
         Anchor = "CENTER",
         relativeTo = "CENTER",
         CustomAnchorFrame = "UIParent",
+        AttachTo = "",
         xOffset = -238,
         yOffset = 314,
         FrameStrata = "MEDIUM",
@@ -804,7 +806,7 @@ local AuraTrackingDisplayFields = {
     "BarTexture", "BarColor", "BarBackgroundColor", "BarShowIcon", "BarIconPosition", "BarInvertFill", "CustomTexts",
     "AuraNameEnabled", "AuraNameFontSize", "AuraNameColor", "AuraNameAnchorPoint", "AuraNameXOffset", "AuraNameYOffset",
     "Spacing", "Limit", "AurasPerRowColumn", "GridGrowDirection", "GridSpacing", "GrowDirection", "Width", "Height", "Zoom",
-    "Anchor", "relativeTo", "CustomAnchorFrame", "xOffset", "yOffset",
+    "Anchor", "relativeTo", "CustomAnchorFrame", "AttachTo", "xOffset", "yOffset",
     "FrameStrata", "BorderSize", "BorderColor", "BorderSwipeMode", "DispelBorderMode", "DispelBorderSize",
     "HideTooltip", "HideDurationText", "HideLongDurationAuras", "ShowWhitelistedPlayerBuffs", "IncludeImmunities", "HideStackText",
     "EnableCooldownSwipe", "InverseCooldownSwipe", "SortMode",
@@ -1296,8 +1298,102 @@ function NSI:SetAuraTrackingCustomName(settingsKey, value)
     local settings = self:GetAuraTrackingSettings(settingsKey)
     if not settings then return end
     value = strtrim(tostring(value or ""))
+    local oldName = settings.Name
     settings.Name = value ~= "" and value or nil
+    if oldName and oldName ~= settings.Name then
+        for index, entry in ipairs(self:IterateAuraTrackingEntries()) do
+            if entry.settings.AttachTo == oldName then
+                entry.settings.AttachTo = settings.Name or ""
+            end
+        end
+    end
+    self:InitAuraTracking()
+    local previewKey = next(self.AuraTrackingPreviewRequests or {})
+    if previewKey then self:PreviewAuraTracking(previewKey, true) end
     self:RefreshAuraTrackingUI()
+end
+
+function NSI:SetAuraTrackingAttachment(settingsKey, name)
+    local settings = self:GetAuraTrackingSettings(settingsKey)
+    if not settings or settingsKey == "AuraMatrix" then return false end
+    name = strtrim(name)
+    if name ~= "" then
+        local entriesByName = {}
+        for index, entry in ipairs(self:IterateAuraTrackingEntries()) do
+            local entryName = entry.settings.Name
+            if entryName and entry.settingsKey ~= "AuraMatrix" then
+                if entriesByName[entryName] == nil then
+                    entriesByName[entryName] = entry.settings
+                else
+                    entriesByName[entryName] = false
+                end
+            end
+        end
+        local target = entriesByName[name]
+        if not target then return false end
+        local visited = {[settings] = true}
+        while target do
+            if visited[target] then return false end
+            visited[target] = true
+            target = entriesByName[target.AttachTo]
+        end
+    end
+    settings.AttachTo = name
+    return true
+end
+
+function NSI:GetAuraTrackingAttachmentGroups()
+    local entries = self:IterateAuraTrackingEntries()
+    local entriesByName, parents, children = {}, {}, {}
+    local hasAttachments = false
+    for index, entry in ipairs(entries) do
+        local name = entry.settings.Name
+        if name and entry.settingsKey ~= "AuraMatrix" then
+            if entriesByName[name] == nil then
+                entriesByName[name] = entry
+            else
+                entriesByName[name] = false
+            end
+        end
+        if entry.settings.AttachTo and entry.settings.AttachTo ~= "" then hasAttachments = true end
+    end
+    if not hasAttachments then return {}, {} end
+    for index, entry in ipairs(entries) do
+        if entry.settingsKey ~= "AuraMatrix" then
+            local parent = entriesByName[entry.settings.AttachTo]
+            if parent then
+                parents[entry] = parent
+                children[parent] = children[parent] or {}
+                children[parent][#children[parent] + 1] = entry
+            end
+        end
+    end
+    local groups, groupsByRoot, groupsBySettings = {}, {}, {}
+    for index, entry in ipairs(entries) do
+        local root, visited = entry, {}
+        while parents[root] and not visited[root] do
+            visited[root] = true
+            root = parents[root]
+        end
+        -- Imported settings can contain cycles; leave those displays independent.
+        if not visited[root] and (parents[entry] or children[entry]) then
+            local group = groupsByRoot[root]
+            if not group then
+                group = {settings = root.settings, entries = {}, states = {}}
+                groupsByRoot[root] = group
+                groups[#groups + 1] = group
+            end
+            groupsBySettings[entry.settings] = group
+        end
+    end
+    local function AppendMembers(entry, group)
+        group.entries[#group.entries + 1] = entry
+        for index, child in ipairs(children[entry] or {}) do AppendMembers(child, group) end
+    end
+    for root, group in pairs(groupsByRoot) do
+        AppendMembers(root, group)
+    end
+    return groups, groupsBySettings
 end
 
 function NSI:AddCustomAuraTracking(group)
@@ -1326,6 +1422,9 @@ function NSI:AddCustomAuraTracking(group)
 end
 
 function NSI:StopAllAuraTrackingPreviews()
+    self.AuraTrackingPreviewRequests = nil
+    self.AuraTrackingPreviewDisplays = nil
+    self.AuraTrackingPreviewLayouts = nil
     local previewKeys = {
         Player = true,
         Tank = true,
@@ -1374,7 +1473,7 @@ function NSI:DeleteCustomAuraTracking(settingsKey)
     if not customIndex or not NSRT.AuraTrackingSettings.Custom then return end
     local settings = NSRT.AuraTrackingSettings.Custom[customIndex]
     if settings and self.AuraTrackingBossBuiltins[settings.builtin] then return end
-    self:PreviewAuraTracking(settingsKey, false)
+    self:StopAllAuraTrackingPreviews()
     table.remove(NSRT.AuraTrackingSettings.Custom, customIndex)
     NSRT.AuraTrackingSettings.UI = NSRT.AuraTrackingSettings.UI or {}
     NSRT.AuraTrackingSettings.UI.Selected = "Player"
@@ -1673,6 +1772,7 @@ function NSI:RepositionAuraTrackingPreview(key)
     local mover = self[previewData.frameKey]
     if not mover or not mover:IsShown() then return end
     SetAuraTrackingPoint(mover, settings, UIParent)
+    self:LayoutAuraTrackingAttachmentPreviews()
 end
 
 local function GetPointCoordinate(frame, point)
@@ -1768,6 +1868,50 @@ local function MakeAuraTrackingDraggable(self, frame, settings, enable, settings
         self.PendingAuraTrackingUpdate = true
         NotifyAuraTrackingPreviewDragged(self, settingsKey)
     end)
+end
+
+function NSI:LayoutAuraTrackingAttachmentPreviews()
+    local groups = self:GetAuraTrackingAttachmentGroups()
+    for groupIndex, group in ipairs(groups) do
+        local previous
+        local direction = group.settings.GrowDirection or "RIGHT"
+        local spacing = group.settings.Spacing or 0
+        for entryIndex, entry in ipairs(group.entries) do
+            local settings = entry.settings
+            local data = GetAuraTrackingPreviewData(entry.settingsKey)
+            local movers = {self[data.frameKey], data.secondFrameKey and self[data.secondFrameKey]}
+            for moverIndex, mover in ipairs(movers) do
+                if mover:IsShown() then
+                    local bounds = {minX = 0, maxX = 0, minY = 0, maxY = 0, mover = mover}
+                    for iconIndex = 1, mover.AuraTrackingPreviewCount do
+                        local x, y = GetAuraTrackingPreviewOffset(settings, direction, iconIndex, mover.AuraTrackingPreviewCount, group.settings)
+                        bounds.minX, bounds.maxX = math.min(bounds.minX, x), math.max(bounds.maxX, x)
+                        bounds.minY, bounds.maxY = math.min(bounds.minY, y), math.max(bounds.maxY, y)
+                    end
+                    bounds.minX, bounds.maxX = bounds.minX - settings.Width / 2, bounds.maxX + settings.Width / 2
+                    bounds.minY, bounds.maxY = bounds.minY - settings.Height / 2, bounds.maxY + settings.Height / 2
+                    mover:ClearAllPoints()
+                    if not previous then
+                        SetAuraTrackingPoint(mover, group.settings, UIParent)
+                    else
+                        local x, y = previous.minX - bounds.minX, previous.maxY - bounds.maxY
+                        if direction == "LEFT" then
+                            x = previous.minX - spacing - bounds.maxX
+                        elseif direction == "UP" then
+                            y = previous.maxY + spacing - bounds.minY
+                        elseif direction == "DOWN" or direction == "CENTER_VERTICAL" then
+                            y = previous.minY - spacing - bounds.maxY
+                        else
+                            x = previous.maxX + spacing - bounds.minX
+                        end
+                        mover:SetPoint("CENTER", previous.mover, "CENTER", x, y)
+                        MakeAuraTrackingDraggable(self, mover, settings, false)
+                    end
+                    previous = bounds
+                end
+            end
+        end
+    end
 end
 
 local function GetAuraTrackingFontPath(self, settings)
@@ -3063,6 +3207,8 @@ local function InitAuraTrackingContainer(self, unit, settings, key, reconfigureB
     local loadMatches = self:EvaluateAuraTrackingLoad(settings)
     if not loadMatches then return end
     sourceSettings = sourceSettings or settings
+    local attachmentGroup = self.AuraTrackingAttachmentGroupsBySettings[sourceSettings]
+    local layoutSettings = attachmentGroup and attachmentGroup.settings or settings
     local state = self.AuraTrackingState and self.AuraTrackingState[key]
     settings.Limit = GetAuraTrackingDisplayLimit(settings)
     if not C_AddOns.IsAddOnLoaded("Blizzard_AuraContainer") then
@@ -3114,13 +3260,14 @@ local function InitAuraTrackingContainer(self, unit, settings, key, reconfigureB
     local container = state.container
     local anchorFrame = state.anchorFrame
     local groupKeyPrefix = "NSRT_" .. key
-    local layoutAnchorPoint = GetAuraTrackingLayoutAnchorPoint(settings)
+    local layoutAnchorPoint = GetAuraTrackingLayoutAnchorPoint(layoutSettings)
     local frameStrata = GetAuraTrackingFrameStrata(settings)
     local unitChanged = container:GetUnit() ~= unit
     state.settings = settings
     state.unit = unit
     state.key = key
     state.unitSetKey = unitSetKey
+    state.layoutSettings = layoutSettings
     if isSpellFiltered and (key == "External" or tostring(key):match("^Custom")) then
         state.requiresAssist = ResolveAuraTrackingCustomUnitType(settings, unit) == "Friendly"
     else
@@ -3163,15 +3310,15 @@ local function InitAuraTrackingContainer(self, unit, settings, key, reconfigureB
             end
         end
     end
-    local horizontalGrowthDirection, verticalGrowthDirection = GetAuraTrackingFlowDirections(settings.GrowDirection, settings.GridGrowDirection or "UP")
-    local rowWidth = GetAuraTrackingRowWidth(settings)
-    local layoutAxis = GetAuraTrackingLayoutAxis(settings)
+    local horizontalGrowthDirection, verticalGrowthDirection = GetAuraTrackingFlowDirections(layoutSettings.GrowDirection, layoutSettings.GridGrowDirection or "UP")
+    local rowWidth = GetAuraTrackingRowWidth(settings, layoutSettings)
+    local layoutAxis = GetAuraTrackingLayoutAxis(layoutSettings)
     local elementWidth, elementHeight = width, height
-    local elementSpacing = settings.Spacing or 0
-    local lineSpacing = settings.GridSpacing ~= nil and settings.GridSpacing or elementSpacing
-    if settings.AurasPerRowColumn == 1 then
+    local elementSpacing = layoutSettings.Spacing or 0
+    local lineSpacing = layoutSettings.GridSpacing ~= nil and layoutSettings.GridSpacing or elementSpacing
+    if layoutSettings.AurasPerRowColumn == 1 then
         -- With one icon per line, only grid growth matters; Blizzard wraps onto the perpendicular axis.
-        local gridGrowDirection = settings.GridGrowDirection or "UP"
+        local gridGrowDirection = layoutSettings.GridGrowDirection or "UP"
         if gridGrowDirection == "UP" or gridGrowDirection == "DOWN" then
             layoutAxis = AnchorUtil.FlowLayoutAxis.Horizontal
             rowWidth = width
@@ -3180,13 +3327,14 @@ local function InitAuraTrackingContainer(self, unit, settings, key, reconfigureB
             rowWidth = height
         end
     end
-    if unitSetKey then
-        -- Empty Blizzard containers are one pixel wide/high. Include the unit gap only in occupied bounds,
-        -- then overlap containers by one pixel so empty raid units contribute no gap to the anchor chain.
-        local unitSpacing = elementSpacing + 1
-        local growDirection = settings.GrowDirection or "RIGHT"
+    if unitSetKey or attachmentGroup then
+        -- Empty Blizzard containers are one pixel wide/high. Include the gap only in occupied bounds,
+        -- then overlap containers by one pixel so empty containers contribute no gap to the anchor chain.
+        local chainSettings = attachmentGroup and attachmentGroup.settings or settings
+        local unitSpacing = (chainSettings.Spacing or 0) + 1
+        local growDirection = chainSettings.GrowDirection or "RIGHT"
         local unitSetAxis = AnchorUtil.FlowLayoutAxis.Horizontal
-        if growDirection == "UP" or growDirection == "DOWN" then
+        if growDirection == "UP" or growDirection == "DOWN" or growDirection == "CENTER_VERTICAL" then
             unitSetAxis = AnchorUtil.FlowLayoutAxis.Vertical
             elementHeight = height + unitSpacing
         else
@@ -3215,6 +3363,7 @@ local function InitAuraTrackingContainer(self, unit, settings, key, reconfigureB
         verticalGrowthDirection = verticalGrowthDirection,
         rowWidth = rowWidth,
         unitSetKey = unitSetKey,
+        attachmentRoot = attachmentGroup and attachmentGroup.settings,
     }
     local anchorTarget = matrixRow and self.AuraMatrixAnchor or GetAuraTrackingAnchorFrame(self, settings, UIParent, anchorFrame)
     if state.appliedAnchorTarget ~= anchorTarget or not AuraTrackingConfigurationsMatch(state.appliedContainerLayout, containerLayout) then
@@ -3225,7 +3374,7 @@ local function InitAuraTrackingContainer(self, unit, settings, key, reconfigureB
         SetAuraTrackingPoint(anchorFrame, settings, UIParent, matrixRow)
         container:ClearAllPoints()
         container:SetSize(width, height)
-        local containerAnchorPoint = GetAuraTrackingContainerAnchorPoint(settings)
+        local containerAnchorPoint = GetAuraTrackingContainerAnchorPoint(layoutSettings)
         container:SetPoint(containerAnchorPoint, anchorFrame, containerAnchorPoint, 0, 0)
         container:SetFlowLayoutAxis(layoutAxis)
         container:SetFlowLayoutAnchorPoint(layoutAnchorPoint)
@@ -3421,6 +3570,7 @@ function NSI:LayoutAuraTrackingUnitSet(unitSetKey, allowRestrictedLayout)
     if restricted and not allowRestrictedLayout then return end
     local unitSet = self.AuraTrackingUnitSets and self.AuraTrackingUnitSets[unitSetKey]
     if not unitSet or #unitSet.states < 2 then return end
+    if self.AuraTrackingAttachmentGroupsBySettings[unitSet.settings] then return end
 
     local settings = unitSet.settings
     local anchorState = unitSet.states[1]
@@ -3465,6 +3615,36 @@ function NSI:LayoutAuraTrackingUnitSet(unitSetKey, allowRestrictedLayout)
     end
 end
 
+function NSI:LayoutAuraTrackingAttachments(allowRestrictedLayout)
+    local restricted = self:Restricted()
+    if restricted and not allowRestrictedLayout then return end
+    for index, group in ipairs(self.AuraTrackingAttachmentGroups or {}) do
+        local previous
+        local growDirection = group.settings.GrowDirection or "RIGHT"
+        for stateIndex, state in ipairs(group.states) do
+            if state.active and state.container:IsShown() and state.container:IsEnabled() then
+                local container = state.container
+                if not restricted or not state.configurationDeferred then
+                    container:ClearAllPoints()
+                    if not previous then
+                        local point = GetAuraTrackingContainerAnchorPoint(group.settings)
+                        container:SetPoint(point, group.anchorFrame, point)
+                    elseif growDirection == "LEFT" then
+                        container:SetPoint("TOPRIGHT", previous, "TOPLEFT", 1, 0)
+                    elseif growDirection == "UP" then
+                        container:SetPoint("BOTTOMLEFT", previous, "TOPLEFT", 0, -1)
+                    elseif growDirection == "DOWN" or growDirection == "CENTER_VERTICAL" then
+                        container:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, 1)
+                    else
+                        container:SetPoint("TOPLEFT", previous, "TOPRIGHT", -1, 0)
+                    end
+                end
+                previous = container
+            end
+        end
+    end
+end
+
 function NSI:UpdateAuraTrackingEncounterVisibility(allowRestrictedLayout)
     local playerVehicleDisabled = self.AuraTrackingPlayerVehicleDisabled or UnitHasVehicleUI("player")
     for _, state in pairs(self.AuraTrackingState or {}) do
@@ -3489,6 +3669,7 @@ function NSI:UpdateAuraTrackingEncounterVisibility(allowRestrictedLayout)
     for unitSetKey in pairs(self.AuraTrackingUnitSets or {}) do
         self:LayoutAuraTrackingUnitSet(unitSetKey, allowRestrictedLayout)
     end
+    self:LayoutAuraTrackingAttachments(allowRestrictedLayout)
     self:RefreshAuraMatrixVisibility()
 end
 
@@ -3539,12 +3720,14 @@ local function SetAuraTrackingPlayerVehicleState(self, disabled)
     for unitSetKey in pairs(self.AuraTrackingUnitSets or {}) do
         self:LayoutAuraTrackingUnitSet(unitSetKey)
     end
+    self:LayoutAuraTrackingAttachments()
     self:RefreshAuraMatrixVisibility()
 end
 
 local function BuildAuraTracking(self, reconfigureButtons)
     self.AuraTrackingStateOrder = {}
     self.AuraTrackingUnitSets = {}
+    self.AuraTrackingAttachmentGroups, self.AuraTrackingAttachmentGroupsBySettings = self:GetAuraTrackingAttachmentGroups()
     local playerControlLost = self.AuraTrackingPlayerVehicleDisabled or UnitHasVehicleUI("player")
 
     for _, state in pairs(self.AuraTrackingState or {}) do
@@ -3604,10 +3787,6 @@ local function BuildAuraTracking(self, reconfigureButtons)
         InitAuraTrackingTankSet(self, NSRT.AuraTrackingSettings.Tank, "Tank", reconfigureButtons)
     end
 
-    if playerControlLost then
-        SetAuraTrackingPlayerVehicleState(self, true)
-    end
-
     for _, key in ipairs(self.AuraTrackingStateOrder) do
         local state = self.AuraTrackingState[key]
         local settings = state and state.settings
@@ -3615,9 +3794,8 @@ local function BuildAuraTracking(self, reconfigureButtons)
             local anchorFrame = GetAuraTrackingAnchorFrame(self, settings, UIParent, state.anchorFrame)
             state.anchorFrame:ClearAllPoints()
             state.anchorFrame:SetPoint(settings.Anchor or "CENTER", anchorFrame, settings.relativeTo or "CENTER", settings.xOffset or 0, settings.yOffset or 0)
-            local layoutAnchorPoint = GetAuraTrackingLayoutAnchorPoint(settings)
             state.container:ClearAllPoints()
-            local containerAnchorPoint = GetAuraTrackingContainerAnchorPoint(settings)
+            local containerAnchorPoint = GetAuraTrackingContainerAnchorPoint(state.layoutSettings or settings)
             state.container:SetPoint(containerAnchorPoint, state.anchorFrame, containerAnchorPoint, 0, 0)
         end
     end
@@ -3632,6 +3810,40 @@ local function BuildAuraTracking(self, reconfigureButtons)
                 state.anchorFrame:Hide()
             end
         end
+    end
+
+    local statesBySettings = {}
+    self.AuraTrackingAttachmentAnchors = self.AuraTrackingAttachmentAnchors or setmetatable({}, {__mode = "k"})
+    for index, stateKey in ipairs(self.AuraTrackingStateOrder) do
+        local state = self.AuraTrackingState[stateKey]
+        local states = statesBySettings[state.sourceSettings]
+        if self.AuraTrackingAttachmentGroupsBySettings[state.sourceSettings] then
+            if not states then
+                states = {}
+                statesBySettings[state.sourceSettings] = states
+            end
+            states[#states + 1] = state
+        end
+    end
+    for index, group in ipairs(self.AuraTrackingAttachmentGroups) do
+        local anchor = self.AuraTrackingAttachmentAnchors[group.settings]
+        local newAnchor = not anchor
+        if newAnchor then anchor = CreateFrame("Frame", nil, self.NSRTFrame) end
+        self.AuraTrackingAttachmentAnchors[group.settings] = anchor
+        group.anchorFrame = anchor
+        if newAnchor or not self:Restricted() then
+            anchor:SetSize(group.settings.Width, group.settings.Height)
+            SetAuraTrackingPoint(anchor, group.settings, UIParent)
+        end
+        for entryIndex, entry in ipairs(group.entries) do
+            for stateIndex, state in ipairs(statesBySettings[entry.settings] or {}) do
+                group.states[#group.states + 1] = state
+            end
+        end
+    end
+
+    if playerControlLost then
+        SetAuraTrackingPlayerVehicleState(self, true)
     end
 
     -- Existing Matrix rows can be re-enabled in combat after a full init left them inactive.
@@ -3748,6 +3960,7 @@ local function BuildAuraTracking(self, reconfigureButtons)
                 for unitSetKey in pairs(unitSetsToLayout) do
                     NSI:LayoutAuraTrackingUnitSet(unitSetKey)
                 end
+                NSI:LayoutAuraTrackingAttachments()
             end)
         end
         AuraTrackingUnitRefreshFrame:UnregisterAllEvents()
@@ -4084,14 +4297,15 @@ local function UpdateAuraTrackingPreviewFrame(self, frame, settings, texture, ke
     end
 end
 
-GetAuraTrackingPreviewOffset = function(settings, growDirection, index, entryCount)
-    local perLine = settings.AurasPerRowColumn or 20
+GetAuraTrackingPreviewOffset = function(settings, growDirection, index, entryCount, layoutSettings)
+    layoutSettings = layoutSettings or settings
+    local perLine = layoutSettings.AurasPerRowColumn or 20
     local indexInLine = (index - 1) % perLine
     local lineIndex = math.floor((index - 1) / perLine)
     local width = settings.Width
     local height = settings.Height
-    local spacing = settings.Spacing or 0
-    local gridSpacing = settings.GridSpacing ~= nil and settings.GridSpacing or spacing
+    local spacing = layoutSettings.Spacing or 0
+    local gridSpacing = layoutSettings.GridSpacing ~= nil and layoutSettings.GridSpacing or spacing
     local xOffset = 0
     local yOffset = 0
 
@@ -4113,7 +4327,7 @@ GetAuraTrackingPreviewOffset = function(settings, growDirection, index, entryCou
         yOffset = indexInLine * (height + spacing) * direction
     end
 
-    local gridGrowDirection = settings.GridGrowDirection or "UP"
+    local gridGrowDirection = layoutSettings.GridGrowDirection or "UP"
     if gridGrowDirection == "LEFT" then
         xOffset = xOffset - lineIndex * (width + gridSpacing)
     elseif gridGrowDirection == "RIGHT" then
@@ -4127,7 +4341,7 @@ GetAuraTrackingPreviewOffset = function(settings, growDirection, index, entryCou
     return xOffset, yOffset
 end
 
-function NSI:PreviewAuraTracking(key, show)
+function NSI:PreviewAuraTracking(key, show, individualPreview)
     if self.IsBuilding then return end
     local settings = self:GetAuraTrackingSettings(key)
     if key == "AuraMatrix" then
@@ -4141,7 +4355,42 @@ function NSI:PreviewAuraTracking(key, show)
     end
     local previewData = GetAuraTrackingPreviewData(key)
     if not settings or not previewData then return end
+    if not individualPreview and not previewData.matrixRow then
+        self.AuraTrackingPreviewRequests = self.AuraTrackingPreviewRequests or {}
+        self.AuraTrackingPreviewRequests[key] = show and true or nil
+        local groupsBySettings = select(2, self:GetAuraTrackingAttachmentGroups())
+        local displays, layouts = {}, {}
+        for requestedKey in pairs(self.AuraTrackingPreviewRequests) do
+            local requestedSettings = self:GetAuraTrackingSettings(requestedKey)
+            local group = groupsBySettings[requestedSettings]
+            if group then
+                for index, entry in ipairs(group.entries) do displays[entry.settingsKey] = true end
+            elseif requestedSettings then
+                displays[requestedKey] = true
+            end
+        end
+        for displayKey in pairs(self.AuraTrackingPreviewDisplays or {}) do
+            if not displays[displayKey] then self:PreviewAuraTracking(displayKey, false, true) end
+        end
+        local requestedGroup = groupsBySettings[settings]
+        for displayKey in pairs(displays) do
+            local displaySettings = self:GetAuraTrackingSettings(displayKey)
+            local displayGroup = groupsBySettings[displaySettings]
+            layouts[displayKey] = displayGroup and displayGroup.settings or displaySettings
+            if not (self.AuraTrackingPreviewDisplays and self.AuraTrackingPreviewDisplays[displayKey])
+                or not self.AuraTrackingPreviewLayouts or self.AuraTrackingPreviewLayouts[displayKey] ~= layouts[displayKey]
+                or show and (displayKey == key or requestedGroup and displayGroup == requestedGroup) then
+                self:PreviewAuraTracking(displayKey, true, displayGroup and displayGroup.settings or true)
+            end
+        end
+        self.AuraTrackingPreviewDisplays = displays
+        self.AuraTrackingPreviewLayouts = layouts
+        self:LayoutAuraTrackingAttachmentPreviews()
+        if not show then self:InitAuraTracking() end
+        return
+    end
     local frameKey = previewData.frameKey
+    local layoutSettings = type(individualPreview) == "table" and individualPreview or settings
     local iconKey = previewData.iconKey
     local texture = previewData.texture
 
@@ -4175,7 +4424,7 @@ function NSI:PreviewAuraTracking(key, show)
                 self[secondFrameKey]:Hide()
             end
         end
-        if not previewData.matrixRow then self:InitAuraTracking() end
+        if not previewData.matrixRow and not individualPreview then self:InitAuraTracking() end
         return
     end
 
@@ -4209,7 +4458,7 @@ function NSI:PreviewAuraTracking(key, show)
         secondMover:SetSize(settings.Width, settings.Height)
         secondMover:ClearAllPoints()
         local grow = settings.MultiTankGrow or "Same"
-        local secondGrow = grow == "Same" and settings.GrowDirection or grow
+        local secondGrow = type(individualPreview) == "table" and layoutSettings.GrowDirection or (grow == "Same" and settings.GrowDirection or grow)
         local xOffset = settings.MultiTankXOffset
         local yOffset = settings.MultiTankYOffset
         if xOffset == nil then xOffset = settings.Width end
@@ -4252,6 +4501,8 @@ function NSI:PreviewAuraTracking(key, show)
     firstPreviewName = firstPreviewName .. (firstPreviewSuffix or "")
     secondPreviewName = secondPreviewName and (secondPreviewName .. secondPreviewSuffix) or nil
     local entries = BuildAuraTrackingPreviewEntries(settings, key, texture)
+    mover.AuraTrackingPreviewCount = #entries
+    if secondMover then secondMover.AuraTrackingPreviewCount = #entries end
     for i = 1, 20 do
         if not self[iconKey][i] then
             local frame = CreateFrame("Frame", nil, mover)
@@ -4264,7 +4515,7 @@ function NSI:PreviewAuraTracking(key, show)
         icon:SetFrameStrata(frameStrata)
         local entry = entries[i]
         if entry then
-            local xOffset, yOffset = GetAuraTrackingPreviewOffset(settings, settings.GrowDirection, i, #entries)
+            local xOffset, yOffset = GetAuraTrackingPreviewOffset(settings, layoutSettings.GrowDirection, i, #entries, layoutSettings)
             icon:ClearAllPoints()
             icon:SetPoint("CENTER", mover, "CENTER", xOffset, yOffset)
             UpdateAuraTrackingPreviewFrame(self, icon, settings, entry.texture or texture, key, i, entry.duration, entry.dispelType, fontPath, previewData, firstPreviewName, previewSourceName, entry.name)
@@ -4287,7 +4538,7 @@ function NSI:PreviewAuraTracking(key, show)
             icon:SetFrameStrata(frameStrata)
             local entry = entries[i]
             if entry then
-                local xOffset, yOffset = GetAuraTrackingPreviewOffset(settings, secondMover.GrowDirection, i, #entries)
+                local xOffset, yOffset = GetAuraTrackingPreviewOffset(settings, secondMover.GrowDirection, i, #entries, layoutSettings)
                 icon:ClearAllPoints()
                 icon:SetPoint("CENTER", secondMover, "CENTER", xOffset, yOffset)
                 UpdateAuraTrackingPreviewFrame(self, icon, settings, entry.texture or texture, key, i, entry.duration, entry.dispelType, fontPath, previewData, secondPreviewName, previewSourceName, entry.name)

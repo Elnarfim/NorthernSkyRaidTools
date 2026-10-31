@@ -355,7 +355,7 @@ local function BuildAuraTrackingUI(screen)
     local rightPanel, RebuildList, SelectEntry, RebuildCurrentTab
     local displaySearchEntry
     local displaySearchText = ""
-    local nameEntry, groupDD, anchorEntry
+    local nameEntry, groupDD, anchorEntry, attachEntry
     local resetTriggerScroll = false
 
     -- Player Stats Display: a standalone, non-aura built-in entry that lives
@@ -1050,9 +1050,31 @@ local function BuildAuraTrackingUI(screen)
         { title = NSI:Loc("Anchor Frame"), desc = NSI:Loc("Aura Tracking Anchor Frame Tooltip") })
     anchorEntry:SetPoint("TOPLEFT", displayF, "TOPLEFT", 0, -displayTypeHeight - 18)
 
+    local attachLbl = displayF:CreateFontString(nil, "OVERLAY")
+    NSI:SetUIFont(attachLbl, 11, "")
+    attachLbl:SetTextColor(1, 0.82, 0, 1)
+    attachLbl:SetText(NSI:Loc("Attach to"))
+    attachEntry = CreateTextEntry(displayF, nil,
+        function() local s = selectedKey and NSI:GetAuraTrackingSettings(selectedKey); return s and s.AttachTo or "" end,
+        function(widget, value)
+            if not selectedKey then return end
+            if not NSI:SetAuraTrackingAttachment(selectedKey, value) then
+                print("|cFF00FFFFNSRT:|r " .. NSI:Loc("Invalid Aura Tracking attachment."))
+                attachEntry:SetValue(NSI:GetAuraTrackingSettings(selectedKey).AttachTo or "")
+                return
+            end
+            apply(selectedKey)
+            RebuildCurrentTab()
+        end,
+        rightW, 22, nil, nil, nil, "NSUIAuraTrackAttachEntry",
+        {title = NSI:Loc("Attach to"), desc = NSI:Loc("Aura Tracking Attach To Tooltip")})
+
     -- ── Definition builders (Display / Trigger via BuildWidgets) ─────
     local function BuildDisplayDefs(s, key)
         local defs = {}
+        local attachmentGroups = select(2, NSI:GetAuraTrackingAttachmentGroups())
+        local attachmentGroup = attachmentGroups[s]
+        local isAttached = attachmentGroup and attachmentGroup.settings ~= s
         local displayType = s.DisplayType or "Icon"
         local isSingle = displayType == "Circle" or displayType == "Text"
         s.DurationColor = s.DurationColor or {1, 1, 0.25, 1}
@@ -1145,6 +1167,9 @@ local function BuildAuraTrackingUI(screen)
             get = function() return s.FrameStrata or "MEDIUM" end, set = function(_, v) s.FrameStrata = v; apply(key) end })
 
         add({ Type = "Label", text = "Layout", highlight = true })
+        if isAttached then
+            add({ Type = "Label", text = string.format(NSI:Loc("Position and layout controlled by: %s"), attachmentGroup.settings.Name), height = 40 })
+        end
         if key == "AuraMatrix" then
             add({ Type = "Checkbox", label = "Disable Target Tracking",
                 tooltip = tip("Disable Target Tracking", "Hide all target rows and keep only player tracking. Target rows only track friendly units."),
@@ -1442,6 +1467,27 @@ local function BuildAuraTrackingUI(screen)
             add({ Type = "Label", text = "Aura Matrix Label Settings", highlight = true })
             add({ Type = "Slider", label = "Name Font Size", min = 6, max = 80, step = 1,
                 get = function() return s.NameFontSize end, set = function(_, v) s.NameFontSize = v; apply(key) end })
+        end
+        if attachmentGroup then
+            local inheritedControls = {
+                ["Multi-Tank Grow"] = true, ["Multi-Tank X-Offset"] = true, ["Multi-Tank Y-Offset"] = true,
+            }
+            if isAttached then
+                inheritedControls["Position Settings"] = true
+                inheritedControls["Anchor Point"] = true
+                inheritedControls["Relative Point"] = true
+                inheritedControls["X-Offset"] = true
+                inheritedControls["Y-Offset"] = true
+                inheritedControls["Grow Direction"] = true
+                inheritedControls["Spacing"] = true
+                inheritedControls["Auras per Row/Column"] = true
+                inheritedControls["Grid-Grow Direction"] = true
+                inheritedControls["Grid-Spacing"] = true
+            end
+            for index = #defs, 1, -1 do
+                local def = defs[index]
+                if inheritedControls[def.label or def.text] then table.remove(defs, index) end
+            end
         end
         return defs
     end
@@ -1761,9 +1807,17 @@ local function BuildAuraTrackingUI(screen)
         local search = string.lower(displaySearchText)
         if activeTab == "Display" then
             local showAnchor = search == "" or string.find(string.lower(NSI:Loc("Anchor Frame")), search, 1, true) ~= nil
+            local showAttach = selectedKey ~= "AuraMatrix" and (search == "" or string.find(string.lower(NSI:Loc("Attach to")), search, 1, true) ~= nil)
             anchorLbl:SetShown(showAnchor)
             anchorEntry.frame:SetShown(showAnchor)
             topPad = displayTypeHeight + (showAnchor and DISPLAY_TOP or 0)
+            attachLbl:SetShown(showAttach)
+            attachEntry.frame:SetShown(showAttach)
+            attachLbl:ClearAllPoints()
+            attachLbl:SetPoint("TOPLEFT", displayF, "TOPLEFT", 0, -topPad)
+            attachEntry.frame:ClearAllPoints()
+            attachEntry:SetPoint("TOPLEFT", displayF, "TOPLEFT", 0, -topPad - 18)
+            if showAttach then topPad = topPad + DISPLAY_TOP end
         end
         local defs = DEF_BUILDERS[activeTab](settings, selectedKey)
         if activeTab == "Display" and search ~= "" then
@@ -2437,6 +2491,7 @@ local function BuildAuraTrackingUI(screen)
         nameEntry.editBox:SetEnabled(nameEditable)
         nameEntry.editBox:SetAlpha(nameEditable and 1 or 0.5)
         anchorEntry:SetValue(settings.CustomAnchorFrame or "UIParent")
+        attachEntry:SetValue(settings.AttachTo or "")
         groupDD:Refresh()
         SelectInnerTab(activeTab)
         RebuildList()
@@ -2449,6 +2504,7 @@ local function BuildAuraTrackingUI(screen)
         RebuildList()
         if selectedKey and NSI:GetAuraTrackingSettings(selectedKey) then
             if anchorEntry then anchorEntry:SetValue(NSI:GetAuraTrackingSettings(selectedKey).CustomAnchorFrame or "UIParent") end
+            if attachEntry then attachEntry:SetValue(NSI:GetAuraTrackingSettings(selectedKey).AttachTo or "") end
             RebuildCurrentTab()
         elseif rightPanel then
             StopAutoPreview(selectedKey)
