@@ -2,6 +2,8 @@
 
 - Add Bar, Text and Circle display types alongside Icon in Aura Tracking
 - Add aura name text and two customizable text fields to Aura Tracking
+- Add option to "attach" one aura tracking to another. This means the new one will belong to the same "dynamic group" but can use different settings.
+- Add Encounter Alert Version Check through right click context Menu & Selection in Version Check Menu
 - Add spec-based auto-loading for personal notes
 - Add X/Y offset controls for reminder displays and note frames
 - Support fractional seconds for reminder durations and TTS timers
