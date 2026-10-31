@@ -19,17 +19,19 @@ end
 
 local checkable_components = {"Addon", "Note", "Reminder", "Encounter Alert"}
 
-local function build_checkable_components_options(onSelect)
+local function build_checkable_components_options(onSelect, forPresets)
     local t = {}
     for i = 1, #checkable_components do
-        tinsert(t, {
-            label = T(checkable_components[i]),
-            phraseId = checkable_components[i],
-            value = checkable_components[i],
-            onclick = function(dropdown, fixedValue, value)
-                if onSelect then onSelect(value) end
-            end
-        })
+        if not forPresets or checkable_components[i] ~= "Encounter Alert" then
+            tinsert(t, {
+                label = T(checkable_components[i]),
+                phraseId = checkable_components[i],
+                value = checkable_components[i],
+                onclick = function(dropdown, fixedValue, value)
+                    if onSelect then onSelect(value) end
+                end
+            })
+        end
     end
     return t
 end
@@ -526,17 +528,8 @@ local function BuildVersionCheckUI(parent)
     local new_preset_type_label = DF:CreateLabel(version_presets_edit_frame, T("Type:"), 11)
     new_preset_type_label:SetPoint("TOPLEFT", version_presets_edit_scrollbox, "BOTTOMLEFT", 0, -20)
 
-    local new_preset_name_entry
     local new_preset_type_dropdown = DF:CreateDropDown(version_presets_edit_frame,
-        function()
-            return build_checkable_components_options(function(value)
-                if value == "Encounter Alert" then
-                    new_preset_name_entry:Disable()
-                else
-                    new_preset_name_entry:Enable()
-                end
-            end)
-        end, checkable_components[1], 125)
+        function() return build_checkable_components_options(nil, true) end, checkable_components[1], 65)
     new_preset_type_dropdown.addonId = addonId
     new_preset_type_dropdown:Select(checkable_components[1])
     new_preset_type_dropdown:SetPoint("LEFT", new_preset_type_label, "RIGHT", 5, 0)
@@ -545,26 +538,18 @@ local function BuildVersionCheckUI(parent)
     local new_preset_name_label = DF:CreateLabel(version_presets_edit_frame, T("Name:"), 11)
     new_preset_name_label:SetPoint("LEFT", new_preset_type_dropdown, "RIGHT", 10, 0)
 
-    new_preset_name_entry = DF:CreateTextEntry(version_presets_edit_frame, function() end, 100, 20)
+    local new_preset_name_entry = DF:CreateTextEntry(version_presets_edit_frame, function() end, 165, 20)
     new_preset_name_entry:SetPoint("LEFT", new_preset_name_label, "RIGHT", 5, 0)
     new_preset_name_entry:SetTemplate(options_dropdown_template)
-    new_preset_type_dropdown:SetTooltip(T("Uses the encounter alert selected in the version check menu."))
 
     local add_button = DF:CreateButton(version_presets_edit_frame, function()
         local name = new_preset_name_entry:GetText()
         local type = new_preset_type_dropdown:GetValue()
-        local value = {type, name}
-        if type == "Encounter Alert" then
-            if component_type_dropdown:GetValue() ~= "Encounter Alert" or not selectedAlertID then return end
-            name = encounterDropdown.label:GetText() .. " / " .. difficultyDropdown.label:GetText() .. " / " .. alertDropdown.label:GetText()
-            value = {type, selectedAlertID, selectedEncID, selectedDiffID}
-        end
-        tinsert(NSRT.Settings["VersionCheckPresets"], { T(type) .. ": " .. name, value })
+        tinsert(NSRT.Settings["VersionCheckPresets"], { T(type) .. ": " .. name, {type, name} })
         version_presets_edit_scrollbox:SetData(NSRT.Settings["VersionCheckPresets"])
         version_presets_edit_scrollbox:Refresh()
         version_check_preset_dropdown:Refresh()
         new_preset_name_entry:SetText("")
-        new_preset_name_entry:Enable()
         new_preset_type_dropdown:Select(checkable_components[1])
     end, 60, 20, T("New"))
     add_button:SetPoint("LEFT", new_preset_name_entry, "RIGHT", 10, 0)
